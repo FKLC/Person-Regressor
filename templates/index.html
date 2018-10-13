@@ -1,0 +1,218 @@
+<html>
+  <head>
+    <title>Person Regressor</title>
+    <!-- Load TensorFlow.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@0.11.7"></script>
+    <!-- Load Posenet -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet@0.1.2"></script>
+  </head>
+  <body>
+    <h1>Person Regressor</h1>
+    <p>This program uses Posenet to extract persons from frame, after it trains regressor to closest person to the center, then after training it iterates over all persons to see who got most likely the who is it trained on, then it draws a rectangle over it!</p>
+    <canvas id="video_feed"></canvas>
+    <br>
+    <p><b id="status">Status: Model Not Loaded Yet</b></p>
+    <button onclick="loadPosenet()">Load Posenet</button>
+    <button onclick="startContinuousEstimation(); status.innerHTML = 'Status: Estimation Started'">Start Continuous Estimation</button>
+    <br><br>
+    <button onclick="startTraining(); status.innerHTML = 'Status: Training Started'">Start Training</button>
+    <button onclick="stop(); status.innerHTML = 'Status: Training Stopped'">Stop Training</button>
+    <br><br>
+    <button onclick="startPrediction(); status.innerHTML = 'Status: Prediction Started'">Predict</button>
+    <button onclick="stop(); status.innerHTML = 'Status: Predicting Stopped'">Stop Predicting</button>
+  </body>
+  <script>
+  const status = document.getElementById("status");
+  var currentLoop;
+
+  const X_SIZE = 40;
+  const Y_SIZE = 90;
+  const MAX_FPS = 30;
+
+  // Initialize Camera
+  var canvas = document.getElementById('video_feed');
+  var context = canvas.getContext('2d');
+
+  var imageObj = new Image();
+  imageObj.onload = function() {
+    canvas.width = imageObj.width;
+    canvas.height = imageObj.height;
+    context.font = "20pt sans-serif";
+    context.fillStyle = "white";
+  };
+  imageObj.src = '{{ url_for('video_feed') }}';
+  // CNN Regressor Model
+  // Build Model
+  const regressor = tf.sequential();
+  regressor.add(tf.layers.conv2d({
+    inputShape: [X_SIZE, Y_SIZE, 3],
+    kernelSize: 5,
+    filters: 8,
+    strides: 1,
+    activation: 'relu',
+    kernelInitializer: 'VarianceScaling'
+  }));
+  regressor.add(tf.layers.maxPooling2d({
+    poolSize: [2, 2],
+    strides: [2, 2]
+  }));
+  regressor.add(tf.layers.conv2d({
+    kernelSize: 5,
+    filters: 16,
+    strides: 1,
+    activation: 'relu',
+    kernelInitializer: 'VarianceScaling'
+  }));
+  regressor.add(tf.layers.maxPooling2d({
+    poolSize: [2, 2],
+    strides: [2, 2]
+  }));
+  regressor.add(tf.layers.flatten());
+  regressor.add(tf.layers.dense({
+    units: 10,
+    kernelInitializer: 'VarianceScaling',
+    activation: 'sigmoid'
+  }));
+  regressor.add(tf.layers.dense({
+    units: 1,
+    kernelInitializer: 'VarianceScaling',
+    activation: 'sigmoid'
+  }));
+
+  const LEARNING_RATE = 0.01;
+  const optimizer = tf.train.sgd(LEARNING_RATE);
+  regressor.compile({
+    optimizer: optimizer,
+    loss: 'meanSquaredError',
+    metrics: ['accuracy'],
+  });
+
+  // Posenet
+  const imageScaleFactor = 0.3; // I selected a small value to let it only detect closest persons
+  const outputStride = 16;
+  const flipHorizontal = false;
+
+  var net = null;
+  var videoElement = document.getElementById("video_feed");
+
+  async function loadPosenet() {
+    net = await posenet.load(0.5); // To get much higher fps on many devices
+    status.innerHTML = "Status: Model Loaded";
+  }
+
+  async function startContinuousEstimation() {
+    const pose = await net.estimateMultiplePoses(videoElement, imageScaleFactor, flipHorizontal, outputStride);
+    context.beginPath();
+    context.drawImage(imageObj, 0, 0);
+    for (i = 0; i < pose.length; i++) {
+      var rect = new Rectangle(pose[i].keypoints);
+      rect.draw();
+    }
+    currentLoop = setTimeout(startContinuousEstimation, 1000 / MAX_FPS);
+  }
+
+  async function startTraining() {
+    if (currentLoop) {
+      clearTimeout(currentLoop);
+    }
+    const pose = await net.estimateMultiplePoses(videoElement, imageScaleFactor, flipHorizontal, outputStride);
+    context.beginPath();
+    context.drawImage(imageObj, 0, 0);
+
+    var closestRectangleDistance;
+    var closestRectangle;
+    for (i = 0; i < pose.length; i++) {
+      var rect = new Rectangle(pose[i].keypoints);
+      if (rect.distanceToCenter < closestRectangleDistance || !closestRectangleDistance) {
+        closestRectangleDistance = rect.distanceToCenter;
+        closestRectangle = rect;
+      }
+      rect.draw();
+    }
+    if (closestRectangle && closestRectangle.width && closestRectangle.height) {
+      var imgs = tf.image.resizeBilinear(tf.fromPixels(closestRectangle.getImageData()), [X_SIZE, Y_SIZE]).expandDims(0).toFloat();
+      closestRectangle.getGarbages(9).forEach(function(e) {
+        imgs = tf.concat([imgs, tf.image.resizeBilinear(e, [X_SIZE, Y_SIZE]).expandDims(0).toFloat()]);
+      });
+      console.log(await regressor.fit(imgs, tf.tensor2d([[1.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0]], [10, 1], "float32"), {epochs: 10}))
+    }
+
+    currentLoop = setTimeout(startTraining, 1000 / MAX_FPS);
+  }
+
+  async function stop() {
+    if (currentLoop) {
+      clearTimeout(currentLoop);
+      startContinuousEstimation();
+    }
+  }
+
+  async function startPrediction() {
+    if (currentLoop) {
+      clearTimeout(currentLoop);
+    }
+    context.beginPath();
+    context.drawImage(imageObj, 0, 0);
+
+    const pose = await net.estimateMultiplePoses(videoElement, imageScaleFactor, flipHorizontal, outputStride);
+    const predictions = await pose.map(function(pose) {
+      var rect = new Rectangle(pose.keypoints);
+      if (rect.width && rect.height) {
+        var imgData = tf.image.resizeBilinear(tf.fromPixels(rect.getImageData()), [X_SIZE, Y_SIZE]);
+
+        return [regressor.predict(imgData.expandDims(0).toFloat()).dataSync(), rect];
+      }
+      return 0;
+    }).filter(pose => pose);
+    if (predictions.length) {
+      const max = predictions.reduce(function(prev, current) {
+          return (prev[0][0] > current[0][0]) ? prev : current
+      })
+      max[1].draw(max[0][0]);
+    }
+    currentLoop = setTimeout(startPrediction, 1000 / MAX_FPS);
+  }
+
+  // Rectangle Class to export borders of keypoints
+  class Rectangle {
+    constructor(keypoints) {
+      keypoints = keypoints.filter(point => point.score >= 0.2);
+      const xpoints = keypoints.map(point => point.position.x);
+      const ypoints = keypoints.map(point => point.position.y);
+      this.left = Math.min.apply(null, xpoints);
+      this.down = Math.min.apply(null, ypoints);
+      this.right = Math.max.apply(null, xpoints);
+      this.up = Math.max.apply(null, ypoints);
+      this.width = this.right - this.left;
+      this.height = this.up - this.down;
+      this.center = [ this.left + this.width / 2,
+                      this.down + this.height / 2 ];
+      this.distanceToCenter = Math.abs(imageObj.width / 2 - this.center[0]) + Math.abs(imageObj.height / 2 - this.center[1]);
+    }
+
+    draw(text) {
+      if (text){
+        context.fillText(text, this.left, this.down);
+      }
+      context.rect(this.left, this.down, this.width, this.height);
+      context.stroke();
+    }
+
+    getImageData() {
+      return context.getImageData(this.left, this.down, this.width, this.height);
+    }
+
+    getGarbages(count) {
+      var garbages = [];
+      const isLeftBiggerSide = this.left >= imageObj.width - this.left - this.width;
+      const X_start = Math.floor((isLeftBiggerSide ? 0 : this.left + this.width));
+      const X_end = Math.floor((isLeftBiggerSide ? this.left : imageObj.width));
+      const partWidth = (X_end - X_start) / count;
+      for (i = 0; i < count; i++) {
+        garbages.push(tf.fromPixels(context.getImageData(X_start + partWidth * i, 0, partWidth, imageObj.height)));
+      }
+      return garbages;
+    }
+  }
+  </script>
+</html>
