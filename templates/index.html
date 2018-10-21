@@ -20,6 +20,9 @@
     <br><br>
     <button onclick="startPrediction(); status.innerHTML = 'Status: Prediction Started'">Predict</button>
     <button onclick="stop(); status.innerHTML = 'Status: Predicting Stopped'">Stop Predicting</button>
+    <br><br>
+    <button onclick="saveModel();">Save Regressor</button>
+    <button onclick="loadModel();">Load Regressor</button>
   </body>
   <script>
   const status = document.getElementById("status");
@@ -43,7 +46,7 @@
   imageObj.src = '{{ url_for('video_feed') }}';
   // CNN Regressor Model
   // Build Model
-  const regressor = tf.sequential();
+  var regressor = tf.sequential();
   regressor.add(tf.layers.conv2d({
     inputShape: [X_SIZE, Y_SIZE, 3],
     kernelSize: 5,
@@ -171,6 +174,20 @@
       max[1].draw(max[0][0]);
     }
     currentLoop = setTimeout(startPrediction, 1000 / MAX_FPS);
+  }
+
+  async function saveModel() {
+    var oldStatus = status.innerHTML;
+    status.innerHTML = "Status: Model Saving";
+    const saveResult = await regressor.save('localstorage://personregressor');
+    status.innerHTML = oldStatus;
+  }
+
+  async function loadModel() {
+    var oldStatus = status.innerHTML;
+    status.innerHTML = "Status: Model Loading";
+    regressor = await tf.loadModel('localstorage://personregressor');
+    status.innerHTML = oldStatus;
   }
 
   // Rectangle Class to export borders of keypoints
